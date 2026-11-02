@@ -4,8 +4,8 @@ Dependency-aware context compaction for long conversations under a token budget.
 
 When a chat history no longer fits, something has to go. `ctxc` builds a dependency graph between turns (`dy`: a later turn depends on the turn that introduced an entity it mentions) and, whenever it keeps a turn, keeps the turns it depends on too, or folds them into a one-line pin. The question is whether that beats plain ranking, so it is measured against BM25, last-N truncation and a few heuristics on a public benchmark and on a controlled synthetic suite.
 
-[![ci](https://github.com/REPLACE_ME/ctx-compact/actions/workflows/ci.yml/badge.svg)](https://github.com/REPLACE_ME/ctx-compact/actions/workflows/ci.yml)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/REPLACE_ME/ctx-compact/blob/main/notebooks/demo.ipynb)
+[![ci](https://github.com/Viraj-rana/ctx-compact/actions/workflows/ci.yml/badge.svg)](https://github.com/Viraj-rana/ctx-compact/actions/workflows/ci.yml)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Viraj-rana/ctx-compact/blob/main/notebooks/demo.ipynb)
 
 ```bash
 pip install -e ".[dev]"
