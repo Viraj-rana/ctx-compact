@@ -67,47 +67,75 @@ def enrich_ent(trns: list[Trn]) -> None:
             trn.ent = extract_ent(trn.txt)
 
 
-def build_dy(trns: list[Trn]) -> dict[str, set[str]]:
+def build_dy(
+    trns: list[Trn],
+    *,
+    back_ref: bool = True,
+    max_df: float | None = None,
+    skip_ent: set[str] | None = None,
+) -> dict[str, set[str]]:
     """Build child -> parents map.
 
     Edge parent -> child when a later turn reuses an entity first introduced
     in an earlier turn, or when the later turn matches a back-ref / probe cue
     (then every earlier anchor turn is a parent).
+
+    max_df drops entities that appear in more than that fraction of turns, so
+    speaker names and filler words do not link the whole conversation.
     """
     enrich_ent(trns)
+    skip = {e.lower() for e in (skip_ent or ())}
+    if max_df is not None:
+        df: dict[str, int] = defaultdict(int)
+        for trn in trns:
+            for e in trn.ent:
+                df[e] += 1
+        cap = max_df * len(trns)
+        skip |= {e for e, c in df.items() if c > cap}
+
     intro: dict[str, str] = {}
     dy: dict[str, set[str]] = defaultdict(set)
     anchors: list[str] = []
 
     for trn in sorted(trns, key=lambda t: t.idx):
         dy.setdefault(trn.id, set())
-        if _BACK_REF.search(trn.txt or "") and anchors:
+        if back_ref and _BACK_REF.search(trn.txt or "") and anchors:
             for pid in anchors:
                 if pid != trn.id:
                     dy[trn.id].add(pid)
         for e in trn.ent:
+            if e in skip:
+                continue
             if e not in intro:
                 intro[e] = trn.id
             else:
                 parent = intro[e]
                 if parent != trn.id:
                     dy[trn.id].add(parent)
-        if is_anchor(trn):
+        if back_ref and is_anchor(trn):
             anchors.append(trn.id)
 
     return dict(dy)
 
 
-def parent_closure(dy: dict[str, set[str]], ids: set[str]) -> set[str]:
-    """All ancestors of ids (transitive parents), including ids themselves."""
+def parent_closure(
+    dy: dict[str, set[str]],
+    ids: set[str],
+    max_depth: int | None = None,
+) -> set[str]:
+    """Ancestors of ids up to max_depth levels (all levels if None), plus ids."""
     out = set(ids)
-    stack = list(ids)
-    while stack:
-        cur = stack.pop()
-        for p in dy.get(cur, ()):
-            if p not in out:
-                out.add(p)
-                stack.append(p)
+    frontier = set(ids)
+    depth = 0
+    while frontier and (max_depth is None or depth < max_depth):
+        nxt: set[str] = set()
+        for cur in frontier:
+            for p in dy.get(cur, ()):
+                if p not in out:
+                    out.add(p)
+                    nxt.add(p)
+        frontier = nxt
+        depth += 1
     return out
 
 

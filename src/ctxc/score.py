@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import math
 import re
+from collections import Counter
+from functools import lru_cache
 
 import numpy as np
 
@@ -11,8 +15,14 @@ from ctxc.trn import Trn
 _WORD = re.compile(r"[a-z0-9_]+", re.IGNORECASE)
 
 
-def _toks(txt: str) -> set[str]:
-    return set(_WORD.findall((txt or "").lower()))
+@lru_cache(maxsize=None)
+def tok_list(txt: str) -> tuple[str, ...]:
+    return tuple(_WORD.findall((txt or "").lower()))
+
+
+@lru_cache(maxsize=None)
+def _toks(txt: str) -> frozenset[str]:
+    return frozenset(tok_list(txt))
 
 
 def ovlp(qry: str, txt: str) -> float:
@@ -26,9 +36,24 @@ def ovlp(qry: str, txt: str) -> float:
     return len(c & q) / len(c)
 
 
-def bow_emb(txt: str, dim: int = 64) -> np.ndarray:
-    import hashlib
+def bm25_scores(trns: list[Trn], qry: str, k1: float = 1.5, b: float = 0.75) -> np.ndarray:
+    docs = [tok_list(t.txt) for t in trns]
+    n = len(docs)
+    if not n:
+        return np.zeros(0)
+    avg = sum(len(d) for d in docs) / n or 1.0
+    q = set(tok_list(qry))
+    df = Counter(w for d in docs for w in set(d) if w in q)
+    out = np.zeros(n)
+    for i, d in enumerate(docs):
+        tf = Counter(w for w in d if w in q)
+        for w, c in tf.items():
+            idf = math.log((n - df[w] + 0.5) / (df[w] + 0.5) + 1.0)
+            out[i] += idf * c * (k1 + 1) / (c + k1 * (1 - b + b * len(d) / avg))
+    return out
 
+
+def bow_emb(txt: str, dim: int = 64) -> np.ndarray:
     v = np.zeros(dim, dtype=np.float64)
     for w in _toks(txt):
         h = int(hashlib.md5(w.encode()).hexdigest(), 16) % dim
@@ -43,6 +68,13 @@ def ensure_emb(trn: Trn, dim: int = 64) -> np.ndarray:
     if trn.emb is None:
         trn.emb = bow_emb(trn.txt, dim=dim)
     return trn.emb
+
+
+def emb_mat(trns: list[Trn]) -> np.ndarray:
+    """Row-normalized embedding matrix, so E @ E.T is cosine similarity."""
+    m = np.stack([ensure_emb(t) for t in trns]).astype(np.float64)
+    n = np.linalg.norm(m, axis=1, keepdims=True)
+    return np.divide(m, n, out=np.zeros_like(m), where=n > 0)
 
 
 def emb_sim(a: np.ndarray, b: np.ndarray) -> float:

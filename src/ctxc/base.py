@@ -1,9 +1,11 @@
-"""Baselines: last-N, similarity eviction, ovlp+recency, extractive drop-summary."""
+"""Baselines: last-N, similarity eviction, BM25, ovlp+recency, extractive drop-summary."""
 
 from __future__ import annotations
 
+import numpy as np
+
 from ctxc.mly import CompactOut, mly_select
-from ctxc.score import emb_sim, ensure_emb
+from ctxc.score import bm25_scores, emb_mat
 from ctxc.tok import tok_cnt
 from ctxc.trn import Trn
 
@@ -48,17 +50,16 @@ def sim_evict(
     pin_cost = tok_cnt(pin)
     rem = max(tok_bud - pin_cost, 0)
     kept: list[Trn] = []
-    kept_embs = []
     used = 0
-    for trn in sorted(trns, key=lambda t: t.idx, reverse=True):
-        emb = ensure_emb(trn)
-        if kept_embs and max(emb_sim(emb, ke) for ke in kept_embs) >= thr:
-            continue
-        if used + trn.tok > rem:
-            continue
-        kept.append(trn)
-        kept_embs.append(emb)
-        used += trn.tok
+    if trns:
+        emb = emb_mat(trns)
+        max_sim = np.full(len(trns), -np.inf)
+        for i in sorted(range(len(trns)), key=lambda j: trns[j].idx, reverse=True):
+            if max_sim[i] >= thr or used + trns[i].tok > rem:
+                continue
+            kept.append(trns[i])
+            used += trns[i].tok
+            max_sim = np.maximum(max_sim, emb @ emb[i])
     kept.sort(key=lambda t: t.idx)
     return CompactOut(
         pin=pin,
@@ -66,6 +67,38 @@ def sim_evict(
         used_tok=pin_cost + used,
         tok_bud=tok_bud,
         method="sim_evict",
+    )
+
+
+def bm25(
+    trns: list[Trn],
+    tok_bud: int,
+    qry: str,
+    *,
+    pin: str = "",
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> CompactOut:
+    """Rank turns by BM25 against the query, fill the budget best-first."""
+    pin = pin or ""
+    pin_cost = tok_cnt(pin)
+    rem = max(tok_bud - pin_cost, 0)
+    sc = bm25_scores(trns, qry, k1=k1, b=b)
+    ranked = sorted(range(len(trns)), key=lambda i: (sc[i], trns[i].idx), reverse=True)
+    kept: list[Trn] = []
+    used = 0
+    for i in ranked:
+        if used + trns[i].tok > rem:
+            continue
+        kept.append(trns[i])
+        used += trns[i].tok
+    kept.sort(key=lambda t: t.idx)
+    return CompactOut(
+        pin=pin,
+        kept=kept,
+        used_tok=pin_cost + used,
+        tok_bud=tok_bud,
+        method="bm25",
     )
 
 

@@ -1,8 +1,8 @@
 # ctxc
 
-Dependency-aware conversation context compaction under a token budget.
+Dependency-aware context compaction for long conversations under a token budget.
 
-`dy` builds turn dependencies (entity reuse + back-refs). `mly` fills the remaining budget by score-per-token and keeps parents of selected turns. Offline held-out eval — no API key.
+When a chat history no longer fits, something has to go. `ctxc` builds a dependency graph between turns (`dy`: a later turn depends on the turn that introduced an entity it mentions) and, whenever it keeps a turn, keeps the turns it depends on too, or folds them into a one-line pin. The question is whether that beats plain ranking, so it is measured against BM25, last-N truncation and a few heuristics on a public benchmark and on a controlled synthetic suite.
 
 [![ci](https://github.com/REPLACE_ME/ctx-compact/actions/workflows/ci.yml/badge.svg)](https://github.com/REPLACE_ME/ctx-compact/actions/workflows/ci.yml)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/REPLACE_ME/ctx-compact/blob/main/notebooks/demo.ipynb)
@@ -10,52 +10,75 @@ Dependency-aware conversation context compaction under a token budget.
 ```bash
 pip install -e ".[dev]"
 python -m pytest -v
+
+python scripts/get_locomo.py          # LoCoMo, CC BY-NC 4.0, not vendored
+python -m ctxc.eval.locomo --out results/locomo_sweep.csv
+python scripts/plot_locomo.py
+
 python -m ctxc.eval.run --split test --budgets 40,55,80,120
 python scripts/export_and_plot.py
 ```
 
-Live walkthrough (pytest + sweep + plots): [`notebooks/demo.ipynb`](notebooks/demo.ipynb) — use the Colab badge above after the repo is on GitHub (set `REPO` in the first cell if needed).
+## Real conversations: LoCoMo
 
-## Results (held-out `bench_test.jsonl`, n=12)
+[LoCoMo](https://github.com/snap-research/locomo) has 10 long two-person conversations (369–689 turns, 9k–19k words) and ~2,000 questions, each labelled with the turns that hold its answer. A compactor is scored by **evidence recall**: the share of those turns still present after compacting the conversation to the budget. No model in the loop, so the number is about what the context keeps, not how well some LLM reads it.
 
-Generated from `scripts/export_and_plot.py` → [`results/bench_test_sweep.csv`](results/bench_test_sweep.csv).
+Conversations 1–5 are the dev split, used once to pick the graph settings (entity document-frequency cap and parent depth, best mean recall over budgets). The figure and table are conversations 6–10, scored once afterwards. Adversarial questions (category 5) are excluded.
 
-![held-out sweep](results/acc_vs_budget.png)
+![LoCoMo held-out results](results/locomo.png)
 
-**Accuracy @ budget 55** (same CSV):
+Held-out, 776 questions ([`results/locomo_sweep.csv`](results/locomo_sweep.csv)):
 
-| method | acc | mean tok |
-|--------|-----|----------|
-| mly | 1.00 | 54.6 |
-| mly_no_collapse | 1.00 | 54.6 |
-| mly_ovlp_score | 1.00 | 54.5 |
-| sum_drop | 1.00 | 49.1 |
-| ovlp_rec | 0.33 | 54.1 |
-| mly_no_dy | 0.33 | 53.8 |
-| last_n | 0.17 | 52.8 |
-| sim_evict | 0.17 | 52.8 |
+| method | 500 words | 1000 | 2000 | 4000 | multi-hop @ 4000 |
+|--------|-----------|------|------|------|------------------|
+| bm25 | 55.0 | 62.2 | 70.3 | 77.4 | 57.0 |
+| mly_bm25 (BM25 rank + repair) | 54.1 | 61.6 | 70.8 | 78.0 | 59.4 |
+| mly_bm25_wide (2-level repair) | 50.1 | 59.3 | 68.6 | 77.5 | 61.6 |
+| mly (original overlap scorer) | 5.6 | 9.8 | 19.3 | 37.5 | — |
+| last_n | 2.0 | 5.2 | 10.9 | 24.7 | — |
+| sum_drop | 1.6 | 5.0 | 10.6 | 24.2 | — |
 
-## Dependency graph (real example `d012`)
+What this says:
+
+- **Ranking matters far more than truncation policy.** Anything that keeps recent or keyword-flagged turns finds under 25% of the evidence even at 4,000 words. BM25 finds 55% at 500.
+- **The original scorer does not transfer.** Word overlap normalised by turn length, plus a recency bonus, worked on the synthetic suite and collapses on natural chat. `mly_bm25` swaps in BM25 ranking so that the only difference from the `bm25` row is the dependency repair (with repair off it reproduces BM25 exactly; a test pins this).
+- **Repair is a trade-off, not a free win.** Overall it lands within a point of BM25. At small budgets it spends words on parents instead of the next-best match and loses a little; at 4,000 words the 2-level setting lifts multi-hop recall from 57.0% to 61.6%. The multi-hop split is 140 questions, so read that as a signal, but dev pointed the same way (+3.4 points).
+
+## Controlled suite: early constraint, late question
+
+24 template dialogues (12 dev, 12 held out) where a rule stated early ("hard limit of 12 tokens per tool call") is asked about many turns later. Entities are extracted automatically; nothing is hand-labelled on the eval path. Scored by whether the constraint survives compaction (regex on an extractive stub answer).
+
+![synthetic held-out sweep](results/acc_vs_budget.png)
+
+At 55 tokens on the held-out set ([`results/bench_test_sweep.csv`](results/bench_test_sweep.csv)): `mly` 1.00, `mly_no_dy` 0.33, `last_n` 0.17, `sim_evict` 0.17. `sum_drop` also reaches 1.00 here because its keyword filter happens to match these rules, and it fails on LoCoMo for the same reason. This suite is built around the failure the method targets, so it shows the mechanism works, not that it generalises; LoCoMo is the test of that.
+
+Dependency graph for one held-out dialogue (red: constraint-like anchor, teal: the late question):
 
 ![dy example](results/dy_example.png)
 
 ## Method
 
-1. Charge pinned system text first.
-2. Build `dy` from entities + probe/back-ref cues into earlier anchors.
-3. Greedy fill; keep parent closure (or collapse parents to short pins).
-4. Judge with extractive stub + `answer_re` / `must_frags`.
+1. Charge the pinned system text against the budget first.
+2. Build `dy`: an edge from the turn that first introduced an entity to each later turn that reuses it, skipping speaker names and entities in more than `max_df` of turns. On the synthetic suite, back-reference cues ("as I said", "that limit") also link to earlier constraint-like turns.
+3. Pick the best remaining turn (score per token, or BM25 rank), add its parents up to `max_depth` levels; if they do not fit whole, fold them into one-line pins.
+4. Repeat until the budget is spent.
+
+## Limits
+
+- Evidence recall, not answer accuracy. The next step is feeding the compacted context to a fixed open model and scoring its answers against the LoCoMo gold answers.
+- Budgets are in words; a real deployment should count with the serving model's tokenizer.
+- Prefill time in the synthetic sweep is a linear estimate, not measured on a server.
 
 ## Layout
 
 ```
-data/                  bench_dev / bench_test
-results/               csv + png
-notebooks/demo.ipynb
-scripts/
-src/ctxc/
+data/                  synthetic bench_dev / bench_test (LoCoMo downloads to data/locomo/)
+results/               csv + png for both evals
+notebooks/demo.ipynb   runs the tests and the synthetic sweep
+scripts/               data generation, download, plotting
+src/ctxc/              dy, mly, baselines, score
+src/ctxc/eval/         synthetic and LoCoMo evals
 tests/
-.github/workflows/ci.yml
 ```
 ctxc compacts long chat histories to fit a fixed token budget without losing earlier constraints that later turns rely on. Keeping only the last N messages drops an early rule like "hard limit of 12 tokens per tool call" once the conversation gets long, so a later question about that limit can no longer be answered.
 
