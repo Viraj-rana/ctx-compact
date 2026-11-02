@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ctxc.dy import build_dy, collapse_pin, parent_closure
-from ctxc.score import bm25_scores, emb_mat, ovlp
+from ctxc.score import bm25_scores, emb_mat, nb_smooth, ovlp
 from ctxc.tok import tok_cnt
 from ctxc.trn import Trn
 
@@ -48,6 +48,7 @@ def mly_select(
     use_dy: bool = True,
     max_depth: int | None = None,
     score_mode: str = "full",
+    nb_a: float = 0.5,
     method: str = "mly",
 ) -> CompactOut:
     """Fill remaining budget by score/token; keep parent closure of selected turns.
@@ -56,8 +57,9 @@ def mly_select(
     they are kept whole if they fit, else collapsed to a pin line.
 
     score_mode: 'full' (overlap + recency + redundancy, per token), 'ovlp_rec'
-    (overlap + recency, per token) or 'bm25' (BM25 rank, same order as the bm25
-    baseline, so the only difference is the parent repair).
+    (overlap + recency, per token), 'bm25' (BM25 rank, same order as the bm25
+    baseline, so the only difference is the parent repair) or 'ctx' (stemmed BM25
+    plus nb_a * the best same-session neighbour score).
     """
     if tok_bud < 0:
         raise ValueError("tok_bud must be >= 0")
@@ -83,6 +85,9 @@ def mly_select(
     full = score_mode == "full"
     if score_mode == "bm25":
         base = bm25_scores(trns, qry)
+        cost = np.ones(n)
+    elif score_mode == "ctx":
+        base = nb_smooth(trns, bm25_scores(trns, qry, stemmed=True), nb_a)
         cost = np.ones(n)
     else:
         rec = idx / max(n - 1, 1) if n > 1 else np.ones(n)

@@ -105,7 +105,12 @@ def methods(conv: LocoConv, *, max_df: float, max_depth: int | None):
     trns = conv.trns
     dy = _dy(conv, max_df)
     dy_wide = _dy(conv, 0.02)
+    dy_ctx = _dy(conv, 0.002)
     return {
+        "mly_ctx": lambda q, b: mly_select(
+            trns, b, q, dy=dy_ctx, max_depth=1, score_mode="ctx"
+        ),
+        "ctx_no_dy": lambda q, b: mly_select(trns, b, q, use_dy=False, score_mode="ctx"),
         "mly_bm25": lambda q, b: mly_select(
             trns, b, q, dy=dy, max_depth=max_depth, score_mode="bm25"
         ),
@@ -115,6 +120,7 @@ def methods(conv: LocoConv, *, max_df: float, max_depth: int | None):
         "mly": lambda q, b: mly_select(trns, b, q, dy=dy, max_depth=max_depth),
         "mly_no_dy": lambda q, b: mly_select(trns, b, q, use_dy=False, collapse_parents=False),
         "bm25": lambda q, b: bm25(trns, b, q),
+        "bm25_stem": lambda q, b: bm25(trns, b, q, stemmed=True),
         "ovlp_rec": lambda q, b: ovlp_rec(trns, b, q),
         "last_n": lambda q, b: last_n(trns, b),
         "sim_evict": lambda q, b: sim_evict(trns, b, q, thr=0.85),

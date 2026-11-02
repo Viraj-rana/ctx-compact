@@ -78,12 +78,13 @@ def bm25(
     pin: str = "",
     k1: float = 1.5,
     b: float = 0.75,
+    stemmed: bool = False,
 ) -> CompactOut:
     """Rank turns by BM25 against the query, fill the budget best-first."""
     pin = pin or ""
     pin_cost = tok_cnt(pin)
     rem = max(tok_bud - pin_cost, 0)
-    sc = bm25_scores(trns, qry, k1=k1, b=b)
+    sc = bm25_scores(trns, qry, k1=k1, b=b, stemmed=stemmed)
     ranked = sorted(range(len(trns)), key=lambda i: (sc[i], trns[i].idx), reverse=True)
     kept: list[Trn] = []
     used = 0

@@ -1,8 +1,12 @@
 import json
 
+import numpy as np
+
 from ctxc.base import bm25
 from ctxc.eval.locomo import load_locomo, recall, run
 from ctxc.mly import mly_select
+from ctxc.score import nb_smooth, stem, stem_list
+from ctxc.trn import Trn
 
 SAMPLE = [
     {
@@ -71,9 +75,26 @@ def test_bm25_mode_matches_baseline(tmp_path):
             assert a == {t.id for t in m.kept}
 
 
+def test_stem_and_smooth():
+    assert stem("painting") == "paint"
+    assert stem("hobbies") == "hobby"
+    assert "the" not in stem_list("the paintings")
+    trns = [Trn(id=f"D{s}:{k}", txt="x", idx=i)
+            for i, (s, k) in enumerate([(1, 1), (1, 2), (2, 1)])]
+    out = nb_smooth(trns, np.array([2.0, 0.0, 4.0]), 0.5)
+    assert out.tolist() == [2.0, 1.0, 4.0]
+
+
+def test_ctx_keeps_reply(tmp_path):
+    (conv,) = _load(tmp_path)
+    b = conv.trns[1].tok + conv.trns[2].tok
+    out = mly_select(conv.trns, b, "What breed?", use_dy=False, score_mode="ctx")
+    assert {"D1:2", "D1:3"} == {t.id for t in out.kept}
+
+
 def test_run_rows(tmp_path):
     convs = _load(tmp_path)
-    rows = run(convs, [10, 40], split="t", only=["bm25", "mly_bm25", "last_n"])
+    rows = run(convs, [10, 40], split="t", only=["bm25", "mly_bm25", "mly_ctx", "last_n"])
     cats = {r.cat for r in rows}
     assert {"all", "single-hop", "multi-hop"} <= cats
     for r in rows:

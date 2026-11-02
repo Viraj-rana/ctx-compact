@@ -14,10 +14,31 @@ from ctxc.trn import Trn
 
 _WORD = re.compile(r"[a-z0-9_]+", re.IGNORECASE)
 
+STOP = frozenset(
+    """a an the and or but if of to in on at for with from by is are was were be been being
+    do does did have has had i you he she it we they me him her us them my your his its our their
+    this that these those what which who whom when where why how not no so as about into than then
+    there here just very can could would should will shall may might must also too up out over
+    again more most some any all each both few other such only own same s t don now ever""".split()
+)
+_SUF = ("ingly", "edly", "ing", "ies", "ied", "ed", "es", "s", "ly")
+
+
+def stem(w: str) -> str:
+    for suf in _SUF:
+        if len(w) > len(suf) + 2 and w.endswith(suf):
+            return w[: -len(suf)] + ("y" if suf in ("ies", "ied") else "")
+    return w
+
 
 @lru_cache(maxsize=None)
 def tok_list(txt: str) -> tuple[str, ...]:
     return tuple(_WORD.findall((txt or "").lower()))
+
+
+@lru_cache(maxsize=None)
+def stem_list(txt: str) -> tuple[str, ...]:
+    return tuple(stem(w) for w in tok_list(txt) if w not in STOP)
 
 
 @lru_cache(maxsize=None)
@@ -36,13 +57,16 @@ def ovlp(qry: str, txt: str) -> float:
     return len(c & q) / len(c)
 
 
-def bm25_scores(trns: list[Trn], qry: str, k1: float = 1.5, b: float = 0.75) -> np.ndarray:
-    docs = [tok_list(t.txt) for t in trns]
+def bm25_scores(
+    trns: list[Trn], qry: str, k1: float = 1.5, b: float = 0.75, *, stemmed: bool = False
+) -> np.ndarray:
+    tl = stem_list if stemmed else tok_list
+    docs = [tl(t.txt) for t in trns]
     n = len(docs)
     if not n:
         return np.zeros(0)
     avg = sum(len(d) for d in docs) / n or 1.0
-    q = set(tok_list(qry))
+    q = set(tl(qry))
     df = Counter(w for d in docs for w in set(d) if w in q)
     out = np.zeros(n)
     for i, d in enumerate(docs):
@@ -51,6 +75,24 @@ def bm25_scores(trns: list[Trn], qry: str, k1: float = 1.5, b: float = 0.75) -> 
             idf = math.log((n - df[w] + 0.5) / (df[w] + 0.5) + 1.0)
             out[i] += idf * c * (k1 + 1) / (c + k1 * (1 - b + b * len(d) / avg))
     return out
+
+
+def _sess(t: Trn) -> str:
+    return t.id.split(":")[0] if ":" in t.id else ""
+
+
+def nb_smooth(trns: list[Trn], s: np.ndarray, a: float) -> np.ndarray:
+    """Add a * the best adjacent score within the same session.
+
+    An answer usually sits next to the turn that matches the question
+    (question -> reply), so a turn inherits part of its neighbours' relevance.
+    """
+    if a == 0 or len(s) < 2:
+        return s
+    ss = [_sess(t) for t in trns]
+    prv = np.r_[0.0, s[:-1]] * np.r_[False, [ss[i] == ss[i - 1] for i in range(1, len(s))]]
+    nxt = np.r_[s[1:], 0.0] * np.r_[[ss[i] == ss[i + 1] for i in range(len(s) - 1)], False]
+    return s + a * np.maximum(prv, nxt)
 
 
 def bow_emb(txt: str, dim: int = 64) -> np.ndarray:

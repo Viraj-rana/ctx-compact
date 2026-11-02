@@ -13,11 +13,13 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "results" / "locomo_sweep.csv"
 OUT = ROOT / "results" / "locomo.png"
 
-LINES = ["bm25", "mly_bm25", "mly_bm25_wide", "mly", "last_n", "sum_drop"]
+LINES = ["mly_ctx", "bm25_stem", "bm25", "mly_bm25", "mly", "last_n", "sum_drop"]
 CATS = ["single-hop", "multi-hop", "temporal", "open-domain"]
 COLORS = {
+    "mly_ctx": "#d62728",
+    "bm25_stem": "#2e7d32",
     "bm25": "#1565c0",
-    "mly_bm25": "#c62828",
+    "mly_bm25": "#f48fb1",
     "mly_bm25_wide": "#ef6c00",
     "mly": "#7b1fa2",
     "last_n": "#546e7a",
@@ -56,19 +58,20 @@ def main() -> None:
     style(ax, "Evidence recall vs budget")
     for m in LINES:
         ys = [float(d[(m, "all")][b]["recall"]) * 100 for b in buds]
-        ax.plot(buds, ys, marker="o", ms=4.5, lw=1.8, color=COLORS[m], label=m, zorder=3)
+        lw = 2.8 if m == "mly_ctx" else 1.6
+        ax.plot(buds, ys, marker="o", ms=4.5, lw=lw, color=COLORS[m], label=m, zorder=3)
     ax.set_xscale("log", base=2)
     ax.set_xticks(buds)
     ax.set_xticklabels([str(b) for b in buds])
     ax.set_xlabel("Budget (words)")
     ax.set_ylabel("Evidence turns kept (%)")
     ax.set_ylim(0, 100)
-    ax.legend(fontsize=8, frameon=False, loc="upper left")
+    ax.legend(fontsize=8, frameon=False, loc="center right", ncol=2)
 
     ax = axes[1]
     b = buds[1]
     style(ax, f"By question type @ {b} words")
-    ms = ["bm25", "mly_bm25", "mly_bm25_wide", "last_n"]
+    ms = ["mly_ctx", "bm25_stem", "bm25", "last_n"]
     xs = np.arange(len(CATS))
     w = 0.8 / len(ms)
     for k, m in enumerate(ms):
@@ -81,22 +84,23 @@ def main() -> None:
     ax.legend(fontsize=8, frameon=False, loc="upper right")
 
     ax = axes[2]
-    style(ax, "Dependency repair minus BM25")
+    style(ax, "mly_ctx gain over baselines")
     for c, ls in (("multi-hop", "-"), ("all", "--")):
-        for m in ("mly_bm25", "mly_bm25_wide"):
+        for m in ("bm25", "bm25_stem"):
             ys = [
-                (float(d[(m, c)][bb]["recall"]) - float(d[("bm25", c)][bb]["recall"])) * 100
+                (float(d[("mly_ctx", c)][bb]["recall"]) - float(d[(m, c)][bb]["recall"])) * 100
                 for bb in buds
             ]
             ax.plot(buds, ys, ls=ls, marker="o", ms=4, lw=1.8, color=COLORS[m],
-                    label=f"{m} · {c}", zorder=3)
+                    label=f"vs {m} · {c}", zorder=3)
     ax.axhline(0, color="#222", lw=0.9)
     ax.set_xscale("log", base=2)
     ax.set_xticks(buds)
     ax.set_xticklabels([str(bb) for bb in buds])
     ax.set_xlabel("Budget (words)")
-    ax.set_ylabel("Recall difference (points)")
-    ax.legend(fontsize=8, frameon=False, loc="upper left")
+    ax.set_ylabel("Recall gain (points)")
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=8, frameon=False, loc="upper right")
 
     fig.suptitle(
         f"LoCoMo held-out conversations (5 conversations, {n} questions) — evidence recall",
