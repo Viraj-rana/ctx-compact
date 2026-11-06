@@ -49,6 +49,7 @@ def mly_select(
     max_depth: int | None = None,
     score_mode: str = "full",
     nb_a: float = 0.5,
+    ext_sc: np.ndarray | None = None,
     method: str = "mly",
 ) -> CompactOut:
     """Fill remaining budget by score/token; keep parent closure of selected turns.
@@ -58,8 +59,9 @@ def mly_select(
 
     score_mode: 'full' (overlap + recency + redundancy, per token), 'ovlp_rec'
     (overlap + recency, per token), 'bm25' (BM25 rank, same order as the bm25
-    baseline, so the only difference is the parent repair) or 'ctx' (stemmed BM25
-    plus nb_a * the best same-session neighbour score).
+    baseline, so the only difference is the parent repair), 'ctx' (stemmed BM25
+    plus nb_a * the best same-session neighbour score) or 'ext' (caller-supplied
+    ext_sc, e.g. dense or hybrid scores).
     """
     if tok_bud < 0:
         raise ValueError("tok_bud must be >= 0")
@@ -88,6 +90,11 @@ def mly_select(
         cost = np.ones(n)
     elif score_mode == "ctx":
         base = nb_smooth(trns, bm25_scores(trns, qry, stemmed=True), nb_a)
+        cost = np.ones(n)
+    elif score_mode == "ext":
+        if ext_sc is None or len(ext_sc) != n:
+            raise ValueError("score_mode='ext' needs ext_sc with one score per turn")
+        base = np.asarray(ext_sc, dtype=np.float64)
         cost = np.ones(n)
     else:
         rec = idx / max(n - 1, 1) if n > 1 else np.ones(n)

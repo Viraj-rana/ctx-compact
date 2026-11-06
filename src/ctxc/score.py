@@ -77,6 +77,11 @@ def bm25_scores(
     return out
 
 
+def minmax(s: np.ndarray) -> np.ndarray:
+    lo, hi = float(s.min()), float(s.max())
+    return (s - lo) / (hi - lo) if hi > lo else np.zeros_like(s)
+
+
 def _sess(t: Trn) -> str:
     return t.id.split(":")[0] if ":" in t.id else ""
 

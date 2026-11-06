@@ -17,9 +17,13 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
+
 from ctxc.base import bm25, last_n, ovlp_rec, sim_evict, sum_drop
 from ctxc.dy import build_dy
 from ctxc.mly import CompactOut, mly_select
+from ctxc.ollama import Emb
+from ctxc.score import bm25_scores, minmax, nb_smooth
 from ctxc.trn import Trn
 
 CATS = {1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop"}
@@ -33,6 +37,7 @@ class LocoQ:
     qry: str
     ev: set[str]
     cat: int
+    ans: str = ""
 
 
 @dataclass
@@ -42,6 +47,7 @@ class LocoConv:
     speakers: set[str]
     qs: list[LocoQ] = field(default_factory=list)
     dropped: int = 0
+    dates: dict[str, str] = field(default_factory=dict)
 
 
 def default_path() -> Path:
@@ -72,7 +78,10 @@ def load_locomo(path: str | Path | None = None) -> list[LocoConv]:
                 trns.append(Trn(id=ids[0], txt=txt, idx=len(trns)))
 
         known = {t.id for t in trns}
-        conv = LocoConv(id=s.get("sample_id", str(len(out))), trns=trns, speakers=speakers)
+        dates = {f"D{n}": c.get(f"session_{n}_date_time", "") for n in nums}
+        conv = LocoConv(
+            id=s.get("sample_id", str(len(out))), trns=trns, speakers=speakers, dates=dates
+        )
         for q in s["qa"]:
             cat = int(q.get("category", 0))
             if cat not in CATS:
@@ -81,7 +90,7 @@ def load_locomo(path: str | Path | None = None) -> list[LocoConv]:
             if not ev:
                 conv.dropped += 1
                 continue
-            conv.qs.append(LocoQ(qry=q["question"], ev=ev, cat=cat))
+            conv.qs.append(LocoQ(qry=q["question"], ev=ev, cat=cat, ans=str(q.get("answer", ""))))
         out.append(conv)
     return out
 
@@ -100,13 +109,48 @@ def _dy(conv: LocoConv, max_df: float) -> dict[str, set[str]]:
     )
 
 
-def methods(conv: LocoConv, *, max_df: float, max_depth: int | None):
+HYB_W = 0.3
+HYB_A = 0.5
+DENSE_A = 0.25
+
+
+def dense_methods(conv: LocoConv, emb: Emb, dy_ctx: dict[str, set[str]]):
+    """Dense (nomic-embed-text via Ollama) and BM25+dense hybrids.
+
+    HYB_W (BM25 share of the fused score), HYB_A and DENSE_A (neighbour weights)
+    were picked on the dev split.
+    """
+    trns = conv.trns
+    d = emb([f"search_document: {t.txt}" for t in trns])
+    qv = dict(zip([q.qry for q in conv.qs], emb([f"search_query: {q.qry}" for q in conv.qs])))
+
+    def cos(q: str) -> np.ndarray:
+        return d @ (qv[q] if q in qv else emb([f"search_query: {q}"])[0])
+
+    def hyb(q: str) -> np.ndarray:
+        return HYB_W * minmax(bm25_scores(trns, q, stemmed=True)) + (1 - HYB_W) * minmax(cos(q))
+
+    def sel(sc: np.ndarray, b: int, dy=None) -> CompactOut:
+        return mly_select(trns, b, "", dy=dy, use_dy=dy is not None, max_depth=1,
+                          score_mode="ext", ext_sc=sc)
+
+    return {
+        "dense": lambda q, b: sel(cos(q), b),
+        "dense_nb": lambda q, b: sel(nb_smooth(trns, minmax(cos(q)), DENSE_A), b),
+        "hybrid": lambda q, b: sel(hyb(q), b),
+        "hybrid_nb": lambda q, b: sel(nb_smooth(trns, hyb(q), HYB_A), b),
+        "mly_hybrid": lambda q, b: sel(nb_smooth(trns, hyb(q), HYB_A), b, dy_ctx),
+    }
+
+
+def methods(conv: LocoConv, *, max_df: float, max_depth: int | None, emb: Emb | None = None):
     """max_df/max_depth were picked on the dev split (best mean recall over budgets)."""
     trns = conv.trns
     dy = _dy(conv, max_df)
     dy_wide = _dy(conv, 0.02)
     dy_ctx = _dy(conv, 0.002)
-    return {
+    extra = dense_methods(conv, emb, dy_ctx) if emb is not None else {}
+    return extra | {
         "mly_ctx": lambda q, b: mly_select(
             trns, b, q, dy=dy_ctx, max_depth=1, score_mode="ctx"
         ),
@@ -149,10 +193,11 @@ def run(
     max_df: float = 0.005,
     max_depth: int | None = 1,
     only: list[str] | None = None,
+    emb: Emb | None = None,
 ) -> list[Row]:
     acc: dict[tuple[str, int, str], list[tuple[float, int, float]]] = defaultdict(list)
     for conv in convs:
-        ms = methods(conv, max_df=max_df, max_depth=max_depth)
+        ms = methods(conv, max_df=max_df, max_depth=max_depth, emb=emb)
         for name, fn in ms.items():
             if only and name not in only:
                 continue
@@ -215,6 +260,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--max-df", type=float, default=0.005)
     p.add_argument("--max-depth", type=int, default=1)
     p.add_argument("--out", default=None)
+    p.add_argument("--dense", action="store_true", help="add dense/hybrid methods (needs Ollama)")
     args = p.parse_args(argv)
 
     path = Path(args.path) if args.path else default_path()
@@ -223,10 +269,13 @@ def main(argv: list[str] | None = None) -> None:
     convs = load_locomo(path)
     budgets = [int(x) for x in args.budgets.split(",") if x.strip()]
     splits = {"dev": convs[:5], "test": convs[5:]}
+    emb = Emb() if args.dense else None
 
     rows: list[Row] = []
     for name, cs in splits.items():
-        rs = run(cs, budgets, split=name, max_df=args.max_df, max_depth=args.max_depth)
+        rs = run(cs, budgets, split=name, max_df=args.max_df, max_depth=args.max_depth, emb=emb)
+        if emb is not None:
+            emb.save()
         nq = sum(len(c.qs) for c in cs)
         print(f"\n=== {name}: {len(cs)} conversations, {nq} questions ===")
         print(table(rs))

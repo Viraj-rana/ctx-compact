@@ -13,10 +13,15 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "results" / "locomo_sweep.csv"
 OUT = ROOT / "results" / "locomo.png"
 
-LINES = ["mly_ctx", "bm25_stem", "bm25", "mly_bm25", "mly", "last_n", "sum_drop"]
+LINES = ["mly_hybrid", "hybrid", "dense", "mly_ctx", "bm25_stem", "bm25", "last_n", "sum_drop"]
 CATS = ["single-hop", "multi-hop", "temporal", "open-domain"]
 COLORS = {
-    "mly_ctx": "#d62728",
+    "mly_hybrid": "#d62728",
+    "hybrid": "#ff9896",
+    "hybrid_nb": "#e377c2",
+    "dense": "#9467bd",
+    "dense_nb": "#c5b0d5",
+    "mly_ctx": "#ff7f0e",
     "bm25_stem": "#2e7d32",
     "bm25": "#1565c0",
     "mly_bm25": "#f48fb1",
@@ -58,7 +63,7 @@ def main() -> None:
     style(ax, "Evidence recall vs budget")
     for m in LINES:
         ys = [float(d[(m, "all")][b]["recall"]) * 100 for b in buds]
-        lw = 2.8 if m == "mly_ctx" else 1.6
+        lw = 2.8 if m == "mly_hybrid" else 1.6
         ax.plot(buds, ys, marker="o", ms=4.5, lw=lw, color=COLORS[m], label=m, zorder=3)
     ax.set_xscale("log", base=2)
     ax.set_xticks(buds)
@@ -71,7 +76,7 @@ def main() -> None:
     ax = axes[1]
     b = buds[1]
     style(ax, f"By question type @ {b} words")
-    ms = ["mly_ctx", "bm25_stem", "bm25", "last_n"]
+    ms = ["mly_hybrid", "hybrid", "dense", "mly_ctx", "bm25", "last_n"]
     xs = np.arange(len(CATS))
     w = 0.8 / len(ms)
     for k, m in enumerate(ms):
@@ -84,23 +89,25 @@ def main() -> None:
     ax.legend(fontsize=8, frameon=False, loc="upper right")
 
     ax = axes[2]
-    style(ax, "mly_ctx gain over baselines")
-    for c, ls in (("multi-hop", "-"), ("all", "--")):
-        for m in ("bm25", "bm25_stem"):
-            ys = [
-                (float(d[("mly_ctx", c)][bb]["recall"]) - float(d[(m, c)][bb]["recall"])) * 100
-                for bb in buds
-            ]
-            ax.plot(buds, ys, ls=ls, marker="o", ms=4, lw=1.8, color=COLORS[m],
-                    label=f"vs {m} · {c}", zorder=3)
+    style(ax, "Neighbour smoothing gain, per ranker")
+    for with_nb, base, col in (
+        ("mly_ctx", "bm25_stem", COLORS["mly_ctx"]),
+        ("dense_nb", "dense", COLORS["dense"]),
+        ("mly_hybrid", "hybrid", COLORS["mly_hybrid"]),
+    ):
+        ys = [
+            (float(d[(with_nb, "all")][bb]["recall"]) - float(d[(base, "all")][bb]["recall"])) * 100
+            for bb in buds
+        ]
+        ax.plot(buds, ys, marker="o", ms=4, lw=1.8, color=col,
+                label=f"{with_nb} − {base}", zorder=3)
     ax.axhline(0, color="#222", lw=0.9)
     ax.set_xscale("log", base=2)
     ax.set_xticks(buds)
     ax.set_xticklabels([str(bb) for bb in buds])
     ax.set_xlabel("Budget (words)")
     ax.set_ylabel("Recall gain (points)")
-    ax.set_ylim(bottom=0)
-    ax.legend(fontsize=8, frameon=False, loc="upper right")
+    ax.legend(fontsize=8, frameon=False, loc="center right")
 
     fig.suptitle(
         f"LoCoMo held-out conversations (5 conversations, {n} questions) — evidence recall",
