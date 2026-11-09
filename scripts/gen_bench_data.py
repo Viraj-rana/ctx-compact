@@ -11,7 +11,6 @@ OUT = ROOT / "data"
 
 PIN = "You are a careful assistant. Obey all user constraints."
 
-# (constraint_line, probe_qry, answer_re, must_frags)
 FACTS = [
     (
         "Important: use a hard limit of 12 tokens per tool call. Never exceed it.",
