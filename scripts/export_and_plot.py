@@ -72,7 +72,6 @@ def _by_method(rows):
 
 
 def plot_acc_grid(rows, path: Path) -> None:
-    # 2x3 panels — same spirit as multi-task accuracy grids, our metrics
     fig, axes = plt.subplots(2, 3, figsize=(11.5, 6.8), sharex=True)
     fig.patch.set_facecolor("#fafafa")
     panels = [
